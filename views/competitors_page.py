@@ -7,17 +7,16 @@ def show():
     # Form to add a new competitor
     with st.form("add_competitor"):
         name = st.text_input("Competitor name")
-        notes = st.text_input("Notes (optional)")
         submitted = st.form_submit_button("Add competitor")
 
         if submitted:
             if not name.strip():
                 st.error("Name is required.")
             else:
-                insert_competitor(name.strip(), notes.strip())
+                insert_competitor(name.strip())
                 st.success(f"Added competitor: {name}")
 
-    st.subheader("Existing competitors")
+    st.subheader("Current competitors")
 
     # Load and display competitor list
     competitors = get_competitors()

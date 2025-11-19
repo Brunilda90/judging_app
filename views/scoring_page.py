@@ -35,7 +35,7 @@ def show():
 
             # Competitor info
             with col1:
-                st.write(f"**{c['name']}**  \n{c['notes'] or ''}")
+                st.write(f"**{c['name']}**")
 
             # Score input, pre-filled with existing score if available
             with col2:

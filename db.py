@@ -11,10 +11,11 @@ def get_connection():
     return conn
 
 def init_db():
-    # Create tables if not exist
+    # Create tables if they do not exist
     conn = get_connection()
     cur = conn.cursor()
 
+    # Judges table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS judges (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -23,14 +24,15 @@ def init_db():
         );
     """)
 
+    # Competitors table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS competitors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            notes TEXT
+            name TEXT NOT NULL
         );
     """)
 
+    # Scores table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS scores (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,6 +45,7 @@ def init_db():
     """)
 
     conn.commit()
+
 
 # --- CRUD operations ---
 
@@ -59,10 +62,14 @@ def get_competitors():
     conn = get_connection()
     return conn.execute("SELECT * FROM competitors ORDER BY id").fetchall()
 
-def insert_competitor(name, notes):
+def insert_competitor(name):
     conn = get_connection()
-    conn.execute("INSERT INTO competitors (name, notes) VALUES (?, ?)", (name, notes))
+    conn.execute(
+        "INSERT INTO competitors (name) VALUES (?)",
+        (name,)
+    )
     conn.commit()
+
 
 def replace_scores_for_judge(judge_id, scores_dict):
     # Replace all scores for a judge
