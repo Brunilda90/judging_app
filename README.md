@@ -10,3 +10,21 @@ Features
 - Scores auto-load when switching judges
 
 - Leaderboard with totals & averages
+
+To-DO List
+
+- In the enter scores section for judges, list the competitors as buttons or some sort of clickable element
+    - Clicking on the competitor should bring up the scoring page for that competitor
+    
+- Instead of entering a numeric score directly, add buttons 1-10 for each question
+    - Calculate the average score and send that instead
+
+
+- Host the app
+
+
+Thoughts
+
+- Should I add weights for each question?
+    - If so, How would I implement it?
+
