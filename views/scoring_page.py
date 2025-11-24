@@ -1,5 +1,11 @@
 import streamlit as st
-from db import get_competitors, replace_scores_for_judge, get_scores_for_judge, get_judge_by_id
+from db import (
+    get_competitors,
+    get_judge_by_id,
+    get_questions,
+    get_answers_for_judge_competitor,
+    save_answers_for_judge,
+)
 
 def show():
     user = st.session_state.get("user")
@@ -9,8 +15,13 @@ def show():
 
     st.header("Enter Scores")
 
-    # Load competitors for scoring
+    # Show success toast if flagged from previous save
+    if st.session_state.pop("score_saved", False):
+        st.toast("Scores saved (average recorded).", icon="✅")
+
+    # Load competitors for scoring and active questions
     competitors = get_competitors()
+    questions = get_questions()
 
     judge_id = user.get("judge_id")
     judge = get_judge_by_id(judge_id) if judge_id else None
@@ -21,40 +32,44 @@ def show():
         st.warning("Add competitors first.")
         return
 
-    # Fetch this judge's existing scores
-    existing_scores = get_scores_for_judge(judge_id)
+    if not questions:
+        st.warning("Admin needs to add questions before scoring.")
+        return
 
     st.write("---")
-    st.write(f"Enter scores for each competitor as **{judge['name']}**:")
+    st.write(f"Enter scores as **{judge['name']}**.")
 
-    scores = {}
+    # Competitor selector
+    competitor_options = {f"{c['name']} (ID {c['id']})": c for c in competitors}
+    selected_label = st.selectbox("Select a competitor", list(competitor_options.keys()), index=0)
+    comp = competitor_options[selected_label]
 
-    # Form to submit all scores at once
-    with st.form("score_form"):
-        for c in competitors:
-            col1, col2 = st.columns([2, 1])
+    st.write(f"### Scoring: {comp['name']}")
 
-            # Competitor info
-            with col1:
-                st.write(f"**{c['name']}**")
+    # Load existing answers
+    existing_answers = get_answers_for_judge_competitor(judge_id, comp["id"])
+    answers = {}
 
-            # Score input, pre-filled with existing score if available
-            with col2:
-                value = st.number_input(
-                    f"Score (ID {c['id']})",
-                    min_value=0.0,
-                    max_value=100.0,
-                    step=1.0,
-                    value=float(existing_scores.get(c["id"], 0.0)),
-                    # key includes judge_id so each judge gets independent widgets
-                    key=f"score_{judge_id}_{c['id']}"
-                )
-                scores[c["id"]] = value
+    st.write("#### Questions")
+    for q in questions:
+        display_label = f"{q['prompt']}"
+        stored_value = int(existing_answers.get(q["id"], 0))
+        stored_choice = int(stored_value / 10) if stored_value else 0
+        choice = st.radio(
+            display_label,
+            options=list(range(0, 11)),
+            format_func=lambda v: "Not set" if v == 0 else str(v),
+            index=stored_choice,
+            horizontal=True,
+            key=f"q_radio_{judge_id}_{comp['id']}_{q['id']}"
+        )
+        answers[q["id"]] = choice
 
-        submitted = st.form_submit_button("Save scores")
-
-        if submitted:
-            # Only save non-zero scores
-            cleaned = {cid: val for cid, val in scores.items() if val > 0}
-            replace_scores_for_judge(judge_id, cleaned)
-            st.success("Scores saved!")
+    if st.button("Save scores", key=f"save_scores_{comp['id']}"):
+        cleaned = {qid: val * 10 for qid, val in answers.items() if val > 0}
+        if not cleaned:
+            st.error("Please select scores for at least one question.")
+        else:
+            save_answers_for_judge(judge_id, comp["id"], cleaned)
+            st.session_state["score_saved"] = True
+            st.rerun()

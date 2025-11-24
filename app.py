@@ -4,6 +4,7 @@ import views.judges_page as judges_page
 import views.competitors_page as competitors_page
 import views.scoring_page as scoring_page
 import views.leaderboard_page as leaderboard_page
+import views.questions_page as questions_page
 
 def main():
     # Setup Streamlit page
@@ -26,7 +27,7 @@ def main():
 
     if user["role"] == "admin":
         page = st.sidebar.radio("Navigation", [
-            "Manage Judges", "Manage Competitors", "Leaderboard"
+            "Manage Judges", "Manage Competitors", "Manage Questions", "Leaderboard"
         ])
     else:
         page = st.sidebar.radio("Navigation", [
@@ -38,6 +39,8 @@ def main():
         judges_page.show()
     elif page == "Manage Competitors":
         competitors_page.show()
+    elif page == "Manage Questions":
+        questions_page.show()
     elif page == "Enter Scores":
         scoring_page.show()
     elif page == "Leaderboard":

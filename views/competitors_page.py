@@ -2,6 +2,12 @@ import streamlit as st
 from db import get_competitors, insert_competitor, update_competitor, delete_competitor
 
 def show():
+    # Init add form state and pending clear
+    if "new_competitor_name" not in st.session_state:
+        st.session_state["new_competitor_name"] = ""
+    if st.session_state.pop("clear_new_competitor", False):
+        st.session_state["new_competitor_name"] = ""
+
     user = st.session_state.get("user")
     if not user or user.get("role") != "admin":
         st.error("Admin access required.")
@@ -11,7 +17,7 @@ def show():
 
     # Form to add a new competitor
     with st.form("add_competitor"):
-        name = st.text_input("Competitor name")
+        name = st.text_input("Competitor name", key="new_competitor_name")
         submitted = st.form_submit_button("Add competitor")
 
         if submitted:
@@ -20,6 +26,8 @@ def show():
             else:
                 insert_competitor(name.strip())
                 st.success(f"Added competitor: {name}")
+                st.session_state["clear_new_competitor"] = True
+                st.rerun()
 
     st.subheader("Current competitors")
 

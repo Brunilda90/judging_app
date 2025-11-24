@@ -11,6 +11,14 @@ def get_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+
+def _to_dict(row):
+    return dict(row) if row else None
+
+
+def _to_dicts(rows):
+    return [dict(r) for r in rows] if rows else []
+
 def init_db():
     # Create tables if they do not exist
     conn = get_connection()
@@ -45,6 +53,28 @@ def init_db():
         );
     """)
 
+    # Questions table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prompt TEXT NOT NULL
+        );
+    """)
+
+    # Answers table (per question score)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS answers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            judge_id INTEGER NOT NULL,
+            competitor_id INTEGER NOT NULL,
+            question_id INTEGER NOT NULL,
+            value REAL NOT NULL,
+            FOREIGN KEY (judge_id) REFERENCES judges(id),
+            FOREIGN KEY (competitor_id) REFERENCES competitors(id),
+            FOREIGN KEY (question_id) REFERENCES questions(id)
+        );
+    """)
+
     # Users table for admin and judge logins
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -66,17 +96,19 @@ def init_db():
 def get_judges():
     # List judges in creation order
     conn = get_connection()
-    return conn.execute("SELECT * FROM judges ORDER BY id").fetchall()
+    rows = conn.execute("SELECT * FROM judges ORDER BY id").fetchall()
+    return _to_dicts(rows)
 
 def get_judges_with_user():
     # Judges joined with their login username
     conn = get_connection()
-    return conn.execute("""
+    rows = conn.execute("""
         SELECT j.*, u.username
         FROM judges j
         LEFT JOIN users u ON u.judge_id = j.id AND u.role = 'judge'
         ORDER BY j.id
     """).fetchall()
+    return _to_dicts(rows)
 
 def insert_judge(name, email):
     # Insert judge without creating a user
@@ -106,7 +138,8 @@ def create_judge_account(name, email, username, password):
 def get_judge_by_id(judge_id):
     # Fetch single judge row
     conn = get_connection()
-    return conn.execute("SELECT * FROM judges WHERE id = ?", (judge_id,)).fetchone()
+    row = conn.execute("SELECT * FROM judges WHERE id = ?", (judge_id,)).fetchone()
+    return _to_dict(row)
 
 def update_judge_account(judge_id, name, email, username, password=None):
     # Update judge profile and linked login; password optional
@@ -137,6 +170,7 @@ def delete_judge_account(judge_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM scores WHERE judge_id = ?", (judge_id,))
+    cur.execute("DELETE FROM answers WHERE judge_id = ?", (judge_id,))
     cur.execute("DELETE FROM users WHERE judge_id = ?", (judge_id,))
     cur.execute("DELETE FROM judges WHERE id = ?", (judge_id,))
     conn.commit()
@@ -144,7 +178,8 @@ def delete_judge_account(judge_id):
 def get_competitors():
     # List competitors in creation order
     conn = get_connection()
-    return conn.execute("SELECT * FROM competitors ORDER BY id").fetchall()
+    rows = conn.execute("SELECT * FROM competitors ORDER BY id").fetchall()
+    return _to_dicts(rows)
 
 def insert_competitor(name):
     # Add a competitor
@@ -169,6 +204,7 @@ def delete_competitor(competitor_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM scores WHERE competitor_id = ?", (competitor_id,))
+    cur.execute("DELETE FROM answers WHERE competitor_id = ?", (competitor_id,))
     cur.execute("DELETE FROM competitors WHERE id = ?", (competitor_id,))
     conn.commit()
 
@@ -182,6 +218,37 @@ def replace_scores_for_judge(judge_id, scores_dict):
         conn.execute(
             "INSERT INTO scores (judge_id, competitor_id, value) VALUES (?, ?, ?)",
             (judge_id, competitor_id, value)
+        )
+    conn.commit()
+
+def save_answers_for_judge(judge_id, competitor_id, answers_dict):
+    # Save per-question answers and aggregate into scores table
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Clear previous answers/scores for this judge+competitor
+    cur.execute(
+        "DELETE FROM answers WHERE judge_id = ? AND competitor_id = ?",
+        (judge_id, competitor_id)
+    )
+    cur.execute(
+        "DELETE FROM scores WHERE judge_id = ? AND competitor_id = ?",
+        (judge_id, competitor_id)
+    )
+
+    # Insert answers
+    for question_id, value in answers_dict.items():
+        cur.execute(
+            "INSERT INTO answers (judge_id, competitor_id, question_id, value) VALUES (?, ?, ?, ?)",
+            (judge_id, competitor_id, question_id, value)
+        )
+
+    # Aggregate average and store in scores table
+    if answers_dict:
+        avg_value = sum(answers_dict.values()) / len(answers_dict)
+        cur.execute(
+            "INSERT INTO scores (judge_id, competitor_id, value) VALUES (?, ?, ?)",
+            (judge_id, competitor_id, avg_value)
         )
     conn.commit()
 
@@ -199,7 +266,7 @@ def get_scores_for_judge(judge_id):
 def get_leaderboard():
     # Return totals and averages per competitor
     conn = get_connection()
-    return conn.execute("""
+    rows = conn.execute("""
         SELECT 
             c.id AS competitor_id,
             c.name AS competitor_name,
@@ -211,6 +278,45 @@ def get_leaderboard():
         GROUP BY c.id, c.name
         ORDER BY avg_score DESC;
     """).fetchall()
+    return _to_dicts(rows)
+
+
+# --- Questions/answers ---
+
+def get_questions():
+    # List all questions
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM questions ORDER BY id").fetchall()
+    return _to_dicts(rows)
+
+def insert_question(prompt):
+    # Add a question
+    conn = get_connection()
+    conn.execute("INSERT INTO questions (prompt) VALUES (?)", (prompt,))
+    conn.commit()
+
+def update_question(question_id, prompt):
+    # Update question text
+    conn = get_connection()
+    conn.execute("UPDATE questions SET prompt = ? WHERE id = ?", (prompt, question_id))
+    conn.commit()
+
+def delete_question(question_id):
+    # Delete question and its answers
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM answers WHERE question_id = ?", (question_id,))
+    cur.execute("DELETE FROM questions WHERE id = ?", (question_id,))
+    conn.commit()
+
+def get_answers_for_judge_competitor(judge_id, competitor_id):
+    # Return answers for a judge+competitor as {question_id: value}
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT question_id, value FROM answers WHERE judge_id = ? AND competitor_id = ?",
+        (judge_id, competitor_id)
+    ).fetchall()
+    return {row["question_id"]: row["value"] for row in rows}
 
 
 # --- Auth helpers ---
@@ -237,5 +343,5 @@ def authenticate_user(username, password):
         (username,)
     ).fetchone()
     if row and row["password_hash"] == hash_password(password):
-        return row
+        return _to_dict(row)
     return None
