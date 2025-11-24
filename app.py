@@ -10,7 +10,7 @@ def main():
     # Setup Streamlit page
     st.set_page_config(page_title="Judging Tool", layout="wide")
 
-    # Create DB tables if needed
+    # Create DB tables if it doesn't exist
     init_db()
 
     user = st.session_state.get("user")
@@ -34,7 +34,7 @@ def main():
             "Enter Scores"
         ])
 
-    # Route to correct page
+    # Routes to correct page
     if page == "Manage Judges":
         judges_page.show()
     elif page == "Manage Competitors":

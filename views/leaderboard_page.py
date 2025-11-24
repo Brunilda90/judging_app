@@ -21,7 +21,7 @@ def show():
         data.append({
             "Rank": idx,
             "Competitor": row["competitor_name"],
-            "# Scores": row["num_scores"],
+            "Number of Judges that entered scores": row["num_scores"],
             "Total Score": round(row["total_score"], 2),
             "Average Score": round(row["avg_score"], 2),
         })

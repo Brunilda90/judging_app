@@ -37,10 +37,9 @@ def show():
         return
 
     st.write("---")
-    st.write(f"Enter scores as **{judge['name']}**.")
 
     # Competitor selector
-    competitor_options = {f"{c['name']} (ID {c['id']})": c for c in competitors}
+    competitor_options = {f"{c['name']}": c for c in competitors}
     selected_label = st.selectbox("Select a competitor", list(competitor_options.keys()), index=0)
     comp = competitor_options[selected_label]
 
