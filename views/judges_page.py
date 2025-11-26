@@ -1,11 +1,11 @@
 import streamlit as st
-import sqlite3
 from db import (
     get_judges_with_user,
     create_judge_account,
     update_judge_account,
     delete_judge_account,
 )
+from pymongo.errors import DuplicateKeyError
 
 def show():
     user = st.session_state.get("user")
@@ -35,7 +35,7 @@ def show():
                         password
                     )
                     st.success(f"Added judge account for: {name}")
-                except sqlite3.IntegrityError as exc:
+                except DuplicateKeyError:
                     message = "Email or username already exists."
                     st.error(message)
 
@@ -71,7 +71,7 @@ def show():
                             )
                             st.success("Judge updated.")
                             st.rerun()
-                        except sqlite3.IntegrityError:
+                        except DuplicateKeyError:
                             st.error("Email or username already exists.")
 
             # Inline delete form

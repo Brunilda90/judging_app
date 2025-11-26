@@ -1,347 +1,313 @@
-import sqlite3
-import streamlit as st
 import hashlib
+import os
+from typing import Any, Dict, Optional
 
-DB_NAME = "judging.db"
+import streamlit as st
+from bson import ObjectId
+from pymongo import ASCENDING, MongoClient
+from pymongo.errors import DuplicateKeyError
+
+# Pull from Streamlit secrets first, env var second, and finally a hard-coded fallback
+DEFAULT_MONGODB_URI = (
+    "mongodb+srv://jamesfitze007_db_user:jwwH5fRMBKM481WK"
+    "@judging-app-cluster.snhtcji.mongodb.net/?appName=Judging-app-cluster"
+)
+DEFAULT_DB_NAME = "judging_app"
+
+
+def _get_mongo_uri() -> str:
+    # Streamlit Cloud exposes secrets via st.secrets
+    if "MONGODB_URI" in st.secrets:
+        return st.secrets["MONGODB_URI"]
+    return os.getenv("MONGODB_URI", DEFAULT_MONGODB_URI)
+
+
+def _get_db_name() -> str:
+    if "MONGODB_DB" in st.secrets:
+        return st.secrets["MONGODB_DB"]
+    return os.getenv("MONGODB_DB", os.getenv("MONGODB_DBNAME", DEFAULT_DB_NAME))
+
 
 @st.cache_resource
-def get_connection():
-    # Return a cached SQLite connection
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_db():
+    # Cached Mongo client/db for Streamlit reruns
+    client = MongoClient(_get_mongo_uri())
+    return client[_get_db_name()]
 
 
-def _to_dict(row):
-    return dict(row) if row else None
+def _oid(value: Any) -> ObjectId:
+    if isinstance(value, ObjectId):
+        return value
+    return ObjectId(str(value))
 
 
-def _to_dicts(rows):
-    return [dict(r) for r in rows] if rows else []
+def _doc_with_id(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not doc:
+        return None
+    clean = dict(doc)
+    clean["id"] = str(clean.pop("_id"))
+    # Normalize nested ids if present
+    for key in ("judge_id", "competitor_id", "question_id"):
+        if key in clean and isinstance(clean[key], ObjectId):
+            clean[key] = str(clean[key])
+    return clean
+
 
 def init_db():
-    # Create tables if they do not exist
-    conn = get_connection()
-    cur = conn.cursor()
-
-    # Judges table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS judges (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            email TEXT NOT NULL UNIQUE
-        );
-    """)
-
-    # Competitors table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS competitors (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL
-        );
-    """)
-
-    # Scores table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS scores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            judge_id INTEGER NOT NULL,
-            competitor_id INTEGER NOT NULL,
-            value REAL NOT NULL,
-            FOREIGN KEY (judge_id) REFERENCES judges(id),
-            FOREIGN KEY (competitor_id) REFERENCES competitors(id)
-        );
-    """)
-
-    # Questions table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS questions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            prompt TEXT NOT NULL
-        );
-    """)
-
-    # Answers table (per question score)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS answers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            judge_id INTEGER NOT NULL,
-            competitor_id INTEGER NOT NULL,
-            question_id INTEGER NOT NULL,
-            value REAL NOT NULL,
-            FOREIGN KEY (judge_id) REFERENCES judges(id),
-            FOREIGN KEY (competitor_id) REFERENCES competitors(id),
-            FOREIGN KEY (question_id) REFERENCES questions(id)
-        );
-    """)
-
-    # Users table for admin and judge logins
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('admin', 'judge')),
-            judge_id INTEGER,
-            FOREIGN KEY (judge_id) REFERENCES judges(id)
-        );
-    """)
-
-    create_default_admin_if_missing(conn)
-    conn.commit()
+    """
+    Create indexes and seed default admin.
+    """
+    db = get_db()
+    db.judges.create_index("email", unique=True)
+    db.users.create_index("username", unique=True)
+    db.users.create_index("judge_id", unique=True, sparse=True)
+    db.scores.create_index(
+        [("judge_id", ASCENDING), ("competitor_id", ASCENDING)], unique=True
+    )
+    db.answers.create_index(
+        [("judge_id", ASCENDING), ("competitor_id", ASCENDING), ("question_id", ASCENDING)],
+        unique=True,
+    )
+    create_default_admin_if_missing(db)
 
 
 # --- CRUD operations ---
 
 def get_judges():
-    # List judges in creation order
-    conn = get_connection()
-    rows = conn.execute("SELECT * FROM judges ORDER BY id").fetchall()
-    return _to_dicts(rows)
+    db = get_db()
+    rows = db.judges.find().sort("_id", ASCENDING)
+    return [_doc_with_id(r) for r in rows]
+
 
 def get_judges_with_user():
-    # Judges joined with their login username
-    conn = get_connection()
-    rows = conn.execute("""
-        SELECT j.*, u.username
-        FROM judges j
-        LEFT JOIN users u ON u.judge_id = j.id AND u.role = 'judge'
-        ORDER BY j.id
-    """).fetchall()
-    return _to_dicts(rows)
+    db = get_db()
+    results = []
+    for judge in db.judges.find().sort("_id", ASCENDING):
+        linked_user = db.users.find_one({"judge_id": judge["_id"], "role": "judge"})
+        merged = _doc_with_id(judge)
+        merged["username"] = linked_user["username"] if linked_user else None
+        results.append(merged)
+    return results
 
-def insert_judge(name, email):
-    # Insert judge without creating a user
-    conn = get_connection()
-    conn.execute("INSERT INTO judges (name, email) VALUES (?, ?)", (name, email))
-    conn.commit()
 
-def create_judge_account(name, email, username, password):
+def insert_judge(name: str, email: str):
+    db = get_db()
+    db.judges.insert_one({"name": name, "email": email})
+
+
+def create_judge_account(name: str, email: str, username: str, password: str):
     """
     Create judge record and associated user account.
     """
-    conn = get_connection()
-    cur = conn.cursor()
+    db = get_db()
+    result = db.judges.insert_one({"name": name, "email": email})
+    judge_id = result.inserted_id
     try:
-        cur.execute("INSERT INTO judges (name, email) VALUES (?, ?)", (name, email))
-        judge_id = cur.lastrowid
-        cur.execute(
-            "INSERT INTO users (username, password_hash, role, judge_id) VALUES (?, ?, 'judge', ?)",
-            (username, hash_password(password), judge_id)
+        db.users.insert_one(
+            {
+                "username": username,
+                "password_hash": hash_password(password),
+                "role": "judge",
+                "judge_id": judge_id,
+            }
         )
-    except sqlite3.IntegrityError:
-        conn.rollback()
+    except DuplicateKeyError:
+        # Roll back the judge if username or email collides
+        db.judges.delete_one({"_id": judge_id})
         raise
-    conn.commit()
     return judge_id
 
-def get_judge_by_id(judge_id):
-    # Fetch single judge row
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM judges WHERE id = ?", (judge_id,)).fetchone()
-    return _to_dict(row)
 
-def update_judge_account(judge_id, name, email, username, password=None):
-    # Update judge profile and linked login; password optional
-    conn = get_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "UPDATE judges SET name = ?, email = ? WHERE id = ?",
-            (name, email, judge_id)
-        )
-        if password:
-            cur.execute(
-                "UPDATE users SET username = ?, password_hash = ? WHERE judge_id = ?",
-                (username, hash_password(password), judge_id)
-            )
-        else:
-            cur.execute(
-                "UPDATE users SET username = ? WHERE judge_id = ?",
-                (username, judge_id)
-            )
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        raise
-    conn.commit()
+def get_judge_by_id(judge_id: Any):
+    db = get_db()
+    row = db.judges.find_one({"_id": _oid(judge_id)})
+    return _doc_with_id(row)
 
-def delete_judge_account(judge_id):
-    # Remove judge, their login, and their scores
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM scores WHERE judge_id = ?", (judge_id,))
-    cur.execute("DELETE FROM answers WHERE judge_id = ?", (judge_id,))
-    cur.execute("DELETE FROM users WHERE judge_id = ?", (judge_id,))
-    cur.execute("DELETE FROM judges WHERE id = ?", (judge_id,))
-    conn.commit()
+
+def update_judge_account(
+    judge_id: Any, name: str, email: str, username: str, password: Optional[str] = None
+):
+    db = get_db()
+    judge_oid = _oid(judge_id)
+    db.judges.update_one({"_id": judge_oid}, {"$set": {"name": name, "email": email}})
+    update_fields: Dict[str, Any] = {"username": username}
+    if password:
+        update_fields["password_hash"] = hash_password(password)
+    db.users.update_one(
+        {"judge_id": judge_oid, "role": "judge"},
+        {"$set": update_fields},
+        upsert=True,
+    )
+
+
+def delete_judge_account(judge_id: Any):
+    db = get_db()
+    judge_oid = _oid(judge_id)
+    db.scores.delete_many({"judge_id": judge_oid})
+    db.answers.delete_many({"judge_id": judge_oid})
+    db.users.delete_many({"judge_id": judge_oid})
+    db.judges.delete_one({"_id": judge_oid})
+
 
 def get_competitors():
-    # List competitors in creation order
-    conn = get_connection()
-    rows = conn.execute("SELECT * FROM competitors ORDER BY id").fetchall()
-    return _to_dicts(rows)
+    db = get_db()
+    rows = db.competitors.find().sort("_id", ASCENDING)
+    return [_doc_with_id(r) for r in rows]
 
-def insert_competitor(name):
-    # Add a competitor
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO competitors (name) VALUES (?)",
-        (name,)
-    )
-    conn.commit()
 
-def update_competitor(competitor_id, name):
-    # Rename a competitor
-    conn = get_connection()
-    conn.execute(
-        "UPDATE competitors SET name = ? WHERE id = ?",
-        (name, competitor_id)
-    )
-    conn.commit()
+def insert_competitor(name: str):
+    db = get_db()
+    db.competitors.insert_one({"name": name})
 
-def delete_competitor(competitor_id):
-    # Remove competitor and their scores
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM scores WHERE competitor_id = ?", (competitor_id,))
-    cur.execute("DELETE FROM answers WHERE competitor_id = ?", (competitor_id,))
-    cur.execute("DELETE FROM competitors WHERE id = ?", (competitor_id,))
-    conn.commit()
+
+def update_competitor(competitor_id: Any, name: str):
+    db = get_db()
+    db.competitors.update_one({"_id": _oid(competitor_id)}, {"$set": {"name": name}})
+
+def delete_competitor(competitor_id: Any):
+    db = get_db()
+    comp_oid = _oid(competitor_id)
+    db.scores.delete_many({"competitor_id": comp_oid})
+    db.answers.delete_many({"competitor_id": comp_oid})
+    db.competitors.delete_one({"_id": comp_oid})
 
 
 def replace_scores_for_judge(judge_id, scores_dict):
     # Replace all scores for a judge
-    conn = get_connection()
-
-    conn.execute("DELETE FROM scores WHERE judge_id = ?", (judge_id,))
+    db = get_db()
+    judge_oid = _oid(judge_id)
+    db.scores.delete_many({"judge_id": judge_oid})
     for competitor_id, value in scores_dict.items():
-        conn.execute(
-            "INSERT INTO scores (judge_id, competitor_id, value) VALUES (?, ?, ?)",
-            (judge_id, competitor_id, value)
-        )
-    conn.commit()
-
-def save_answers_for_judge(judge_id, competitor_id, answers_dict):
-    # Save per-question answers and aggregate into scores table
-    conn = get_connection()
-    cur = conn.cursor()
-
-    # Clear previous answers/scores for this judge+competitor
-    cur.execute(
-        "DELETE FROM answers WHERE judge_id = ? AND competitor_id = ?",
-        (judge_id, competitor_id)
-    )
-    cur.execute(
-        "DELETE FROM scores WHERE judge_id = ? AND competitor_id = ?",
-        (judge_id, competitor_id)
-    )
-
-    # Insert answers
-    for question_id, value in answers_dict.items():
-        cur.execute(
-            "INSERT INTO answers (judge_id, competitor_id, question_id, value) VALUES (?, ?, ?, ?)",
-            (judge_id, competitor_id, question_id, value)
+        db.scores.insert_one(
+            {"judge_id": judge_oid, "competitor_id": _oid(competitor_id), "value": value}
         )
 
-    # Aggregate average and store in scores table
+
+def save_answers_for_judge(judge_id: Any, competitor_id: Any, answers_dict: Dict[Any, float]):
+    # Save per-question answers and aggregate into scores collection
+    db = get_db()
+    judge_oid = _oid(judge_id)
+    comp_oid = _oid(competitor_id)
+
+    db.answers.delete_many({"judge_id": judge_oid, "competitor_id": comp_oid})
+    db.scores.delete_many({"judge_id": judge_oid, "competitor_id": comp_oid})
+
     if answers_dict:
-        avg_value = sum(answers_dict.values()) / len(answers_dict)
-        cur.execute(
-            "INSERT INTO scores (judge_id, competitor_id, value) VALUES (?, ?, ?)",
-            (judge_id, competitor_id, avg_value)
-        )
-    conn.commit()
+        payload = []
+        for question_id, value in answers_dict.items():
+            payload.append(
+                {
+                    "judge_id": judge_oid,
+                    "competitor_id": comp_oid,
+                    "question_id": _oid(question_id),
+                    "value": value,
+                }
+            )
+        if payload:
+            db.answers.insert_many(payload)
 
-def get_scores_for_judge(judge_id):
-    # Return existing scores for a judge as {competitor_id: value}
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT competitor_id, value FROM scores WHERE judge_id = ?",
-        (judge_id,)
-    )
-    rows = cur.fetchall()
-    return {row["competitor_id"]: row["value"] for row in rows}
+        avg_value = sum(answers_dict.values()) / len(answers_dict)
+        db.scores.insert_one(
+            {"judge_id": judge_oid, "competitor_id": comp_oid, "value": avg_value}
+        )
+
+
+def get_scores_for_judge(judge_id: Any):
+    db = get_db()
+    judge_oid = _oid(judge_id)
+    rows = db.scores.find({"judge_id": judge_oid})
+    return {str(row["competitor_id"]): row["value"] for row in rows}
+
 
 def get_leaderboard():
-    # Return totals and averages per competitor
-    conn = get_connection()
-    rows = conn.execute("""
-        SELECT 
-            c.id AS competitor_id,
-            c.name AS competitor_name,
-            COUNT(s.id) AS num_scores,
-            COALESCE(SUM(s.value), 0) AS total_score,
-            COALESCE(AVG(s.value), 0) AS avg_score
-        FROM competitors c
-        LEFT JOIN scores s ON c.id = s.competitor_id
-        GROUP BY c.id, c.name
-        ORDER BY avg_score DESC;
-    """).fetchall()
-    return _to_dicts(rows)
+    db = get_db()
+    pipeline = [
+        {
+            "$lookup": {
+                "from": "scores",
+                "localField": "_id",
+                "foreignField": "competitor_id",
+                "as": "score_docs",
+            }
+        },
+        {
+            "$addFields": {
+                "num_scores": {"$size": "$score_docs"},
+                "total_score": {"$sum": "$score_docs.value"},
+                "avg_score": {
+                    "$cond": [
+                        {"$gt": [{"$size": "$score_docs"}, 0]},
+                        {"$avg": "$score_docs.value"},
+                        0,
+                    ]
+                },
+            }
+        },
+        {
+            "$project": {
+                "name": 1,
+                "num_scores": 1,
+                "total_score": 1,
+                "avg_score": 1,
+            }
+        },
+        {"$sort": {"avg_score": -1}},
+    ]
+    rows = db.competitors.aggregate(pipeline)
+    results = []
+    for row in rows:
+        base = _doc_with_id(row)
+        base["competitor_id"] = base.pop("id")
+        base["competitor_name"] = row["name"]
+        results.append(base)
+    return results
 
 
 # --- Questions/answers ---
 
 def get_questions():
-    # List all questions
-    conn = get_connection()
-    rows = conn.execute("SELECT * FROM questions ORDER BY id").fetchall()
-    return _to_dicts(rows)
+    db = get_db()
+    rows = db.questions.find().sort("_id", ASCENDING)
+    return [_doc_with_id(r) for r in rows]
 
 def insert_question(prompt):
-    # Add a question
-    conn = get_connection()
-    conn.execute("INSERT INTO questions (prompt) VALUES (?)", (prompt,))
-    conn.commit()
+    db = get_db()
+    db.questions.insert_one({"prompt": prompt})
 
 def update_question(question_id, prompt):
-    # Update question text
-    conn = get_connection()
-    conn.execute("UPDATE questions SET prompt = ? WHERE id = ?", (prompt, question_id))
-    conn.commit()
+    db = get_db()
+    db.questions.update_one({"_id": _oid(question_id)}, {"$set": {"prompt": prompt}})
 
 def delete_question(question_id):
-    # Delete question and its answers
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM answers WHERE question_id = ?", (question_id,))
-    cur.execute("DELETE FROM questions WHERE id = ?", (question_id,))
-    conn.commit()
+    db = get_db()
+    question_oid = _oid(question_id)
+    db.answers.delete_many({"question_id": question_oid})
+    db.questions.delete_one({"_id": question_oid})
 
 def get_answers_for_judge_competitor(judge_id, competitor_id):
-    # Return answers for a judge+competitor as {question_id: value}
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT question_id, value FROM answers WHERE judge_id = ? AND competitor_id = ?",
-        (judge_id, competitor_id)
-    ).fetchall()
-    return {row["question_id"]: row["value"] for row in rows}
+    db = get_db()
+    rows = db.answers.find(
+        {"judge_id": _oid(judge_id), "competitor_id": _oid(competitor_id)}
+    )
+    return {str(row["question_id"]): row["value"] for row in rows}
 
 
 # --- Auth helpers ---
 
 def hash_password(password: str) -> str:
-    # Simple SHA256 password hash
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
-def create_default_admin_if_missing(conn):
-    # Seed a default admin if none exists
-    cur = conn.execute("SELECT COUNT(*) AS cnt FROM users WHERE role = 'admin'")
-    row = cur.fetchone()
-    if row and row["cnt"] == 0:
-        conn.execute(
-            "INSERT INTO users (username, password_hash, role, judge_id) VALUES (?, ?, 'admin', NULL)",
-            ("admin", hash_password("admin"))
+def create_default_admin_if_missing(db):
+    existing = db.users.count_documents({"role": "admin"})
+    if existing == 0:
+        db.users.insert_one(
+            {"username": "admin", "password_hash": hash_password("admin"), "role": "admin"}
         )
 
 def authenticate_user(username, password):
-    # Validate credentials and return user row
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM users WHERE username = ?",
-        (username,)
-    ).fetchone()
+    db = get_db()
+    row = db.users.find_one({"username": username})
     if row and row["password_hash"] == hash_password(password):
-        return _to_dict(row)
+        result = _doc_with_id(row)
+        return result
     return None
