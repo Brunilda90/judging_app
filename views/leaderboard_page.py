@@ -26,4 +26,4 @@ def show():
             "Average Score": round(row["avg_score"], 2),
         })
 
-    st.table(data)
+    st.dataframe(data)
