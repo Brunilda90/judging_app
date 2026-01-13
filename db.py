@@ -9,33 +9,31 @@ from pymongo.errors import DuplicateKeyError
 from bson.binary import Binary
 from datetime import datetime
 
-# Pull from Streamlit secrets first, env var second, and finally a hard-coded fallback
-DEFAULT_MONGODB_URI = (
-    "mongodb+srv://jamesfitze007_db_user:jwwH5fRMBKM481WK"
-    "@judging-app-cluster.snhtcji.mongodb.net/?appName=Judging-app-cluster"
-)
-DEFAULT_DB_NAME = "judging_app"
-
-
 def _get_mongo_uri() -> str:
-    # Streamlit Cloud exposes secrets via st.secrets
+    # Streamlit Cloud exposes secrets via st.
+    print("calling _get_mongo_uri")
     try:
-        secret_uri = st.secrets.get("MONGODB_URI")  # type: ignore[attr-defined]
+        secret_uri = st.secrets.database.uri 
     except Exception:
         secret_uri = None
     if secret_uri:
+        print("Using MongoDB URI from Streamlit secrets.")
         return secret_uri
-    return os.getenv("MONGODB_URI", DEFAULT_MONGODB_URI)
+    print("Using local MongoDB URI. TESTING PURPOSES ONLY.")
+    return DEFAULT_MONGODB_URI
 
 
 def _get_db_name() -> str:
+    print("calling _get_db_name")
     try:
-        secret_db = st.secrets.get("MONGODB_DB")  # type: ignore[attr-defined]
+        secret_db = st.secrets.database.name  # type: ignore[attr-defined]
     except Exception:
         secret_db = None
     if secret_db:
+        print("Using MongoDB DB name from Streamlit secrets.")
         return secret_db
-    return os.getenv("MONGODB_DB", os.getenv("MONGODB_DBNAME", DEFAULT_DB_NAME))
+    print("Using local MongoDB DB name. TESTING PURPOSES ONLY.")
+    return DEFAULT_DB_NAME
 
 
 @st.cache_resource
