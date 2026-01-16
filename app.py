@@ -1,5 +1,5 @@
 import streamlit as st
-from db import init_db, authenticate_user, get_background_color
+from db import init_db, authenticate_user, get_background_color, is_db_configured
 import views.judges_page as judges_page
 import views.competitors_page as competitors_page
 import views.scoring_page as scoring_page
@@ -69,6 +69,12 @@ def render_login():
     # Simple login form that sets session on success
     st.title("Judging Tool")
     st.subheader("Login")
+
+    if not is_db_configured():
+        st.error(
+            "Database configuration missing. Create a .streamlit/secrets.toml with [database] uri and name. Login is disabled until configured."
+        )
+        st.stop()
 
     with st.form("login_form"):
         username = st.text_input("Username")

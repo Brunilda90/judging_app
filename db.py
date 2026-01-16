@@ -13,14 +13,14 @@ def _get_mongo_uri() -> str:
     # Streamlit Cloud exposes secrets via st.
     print("calling _get_mongo_uri")
     try:
-        secret_uri = st.secrets.database.uri 
+        secret_uri = st.secrets.database.uri
     except Exception:
         secret_uri = None
     if secret_uri:
         print("Using MongoDB URI from Streamlit secrets.")
         return secret_uri
-    print("Using local MongoDB URI. TESTING PURPOSES ONLY.")
-    return DEFAULT_MONGODB_URI
+    # No valid URI present
+    return None
 
 
 def _get_db_name() -> str:
@@ -32,15 +32,26 @@ def _get_db_name() -> str:
     if secret_db:
         print("Using MongoDB DB name from Streamlit secrets.")
         return secret_db
-    print("Using local MongoDB DB name. TESTING PURPOSES ONLY.")
-    return DEFAULT_DB_NAME
+    return None
 
 
 @st.cache_resource
 def get_db():
     # Cached Mongo client/db for Streamlit reruns
-    client = MongoClient(_get_mongo_uri())
-    return client[_get_db_name()]
+    uri = _get_mongo_uri()
+    db_name = _get_db_name()
+    if not uri or not db_name:
+        raise RuntimeError("Database configuration missing. See .streamlit/secrets.toml")
+    client = MongoClient(uri)
+    return client[db_name]
+
+
+# Module-level helper to let the app check configuration before calling DB functions
+def is_db_configured() -> bool:
+    try:
+        return bool(_get_mongo_uri() and _get_db_name())
+    except Exception:
+        return False
 
 
 def _oid(value: Any) -> ObjectId:
@@ -65,6 +76,11 @@ def init_db():
     """
     Create indexes and seed default admin.
     """
+    if not is_db_configured():
+        st.error(
+            "Database configuration missing. Create a .streamlit/secrets.toml with [database] uri and name. Login is disabled until configured."
+        )
+        return
     db = get_db()
     db.judges.create_index("email", unique=True)
     db.users.create_index("username", unique=True)
